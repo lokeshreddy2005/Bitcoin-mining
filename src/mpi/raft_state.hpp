@@ -7,7 +7,6 @@
 
 using namespace std;
 
-// ========== MESSAGE TAGS ==========
 #define TAG_REQUEST_VOTE 1
 #define TAG_VOTE_REPLY 2
 #define TAG_HEARTBEAT 3
@@ -21,10 +20,10 @@ using namespace std;
 #define TAG_WORK_STATUS_REPLY 15
 #define TAG_CHECKPOINT_SYNC 16
 
-// ========== ENUMS ==========
+//enums
+
 enum NodeState { FOLLOWER, CANDIDATE, LEADER };
 
-// ========== STRUCTURES ==========
 
 struct RaftState {
     NodeState state = FOLLOWER;

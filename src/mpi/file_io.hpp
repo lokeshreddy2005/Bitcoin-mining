@@ -11,26 +11,23 @@
 
 using namespace std;
 
-// Forward declarations
+// forward declarations
 extern int world_rank;
 extern RaftState raft_state;
 extern WorkStatusReport my_work_status;
 extern vector<WorkRange> global_work_ranges;
 extern ofstream log_file;
-extern uint64_t global_max_nonce_checked;  // NEW
-
-// ========== FILE I/O FUNCTIONS ==========
+extern uint64_t global_max_nonce_checked;  
 
 inline void ensure_directory(const string& dir) {
     mkdir(dir.c_str(), 0755);
 }
 
-// FIXED: Truncate log file (start fresh each run)
 inline void log_to_file(const string& msg) {
     if (!log_file.is_open()) {
         ensure_directory(LOG_DIR);
         string filename = LOG_DIR + "rank_" + to_string(world_rank) + ".log";
-        log_file.open(filename, ios::out | ios::trunc);  // ← CHANGED
+        log_file.open(filename, ios::out | ios::trunc);
     }
     
     auto now = chrono::system_clock::now();
@@ -44,11 +41,6 @@ inline void log_to_file(const string& msg) {
     
     log_file << "] " << msg << endl;
     log_file.flush();
-}
-
-// REMOVED: Don't create .chk files
-inline void save_checkpoint_to_file() {
-    return;
 }
 
 inline void save_global_work_state() {
@@ -176,4 +168,4 @@ inline vector<Transaction> read_transactions(const string& filename) {
     return txs;
 }
 
-#endif // FILE_IO_HPP
+#endif

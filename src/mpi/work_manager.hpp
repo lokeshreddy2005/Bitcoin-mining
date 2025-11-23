@@ -7,13 +7,11 @@
 
 using namespace std;
 
-// Forward declarations
+// forward declarations
 extern vector<WorkRange> global_work_ranges;
 extern vector<Transaction> transactions;
 extern RaftState raft_state;
 extern int world_size;
-
-// ========== WORK MANAGEMENT ==========
 
 inline void initialize_work_ranges() {
     if (!transactions.empty()) {
@@ -70,4 +68,4 @@ inline WorkRange* get_next_incomplete_range() {
     return nullptr;
 }
 
-#endif // WORK_MANAGER_HPP
+#endif

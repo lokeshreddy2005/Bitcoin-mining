@@ -16,7 +16,6 @@
 
 using namespace std;
 
-// ========== GLOBAL STATE ==========
 int world_rank, world_size;
 RaftState raft_state;
 atomic<bool> block_found(false);
@@ -40,7 +39,6 @@ uint64_t max_nonce_limit = UINT64_MAX;
 mt19937 rng(chrono::steady_clock::now().time_since_epoch().count());
 uniform_real_distribution<> uniform_dist(0.0, 1.0);
 
-// ========== DISTRIBUTED VM FUNCTIONS ==========
 
 //broadcast transactions from rank 0 to all nodes
 void broadcast_transactions() {
@@ -48,7 +46,7 @@ void broadcast_transactions() {
     
     if (world_rank == 0) {
         //rank 0 reads transactions and selects probabilistically
-        vector<Transaction> all_txs = read_transactions("../transactions.txt");
+        vector<Transaction> all_txs = read_transactions("transactions.txt");
         
         if (all_txs.empty()) {
             log_to_file("ERROR: No transactions found!");
@@ -295,7 +293,6 @@ void check_election_timeout() {
     }
 }
 
-// ========== WORK DEDUPLICATION ==========
 
 void update_max_nonce_checked() {
     for (const auto& range : global_work_ranges) {
@@ -516,8 +513,8 @@ void leader_monitor_workers() {
     }
 }
 
-// ========== WORKER MINING ==========
 
+//sha mining function for workers
 void worker_mine(const WorkAssignment& work) {
     string tx_data(work.transaction_data);
     
@@ -649,8 +646,7 @@ void worker_mine(const WorkAssignment& work) {
     my_work_status.is_mining = false;
 }
 
-// ========== MESSAGE HANDLING ==========
-
+//mpi handler
 void handle_messages() {
     int flag;
     MPI_Status status;
@@ -689,7 +685,6 @@ void handle_messages() {
     }
 }
 
-// ========== MAIN LOOP ==========
 
 void run_node() {
     //rank 0 starts as leader initially
@@ -762,17 +757,10 @@ int main(int argc, char** argv) {
         difficulty = atoi(argv[1]);
     }
     
-    //cap difficulty
-    if (difficulty > 6) {
-        if (world_rank == 0) {
-            cout << "Warning: Difficulty " << difficulty << " too high, using 5 instead" << endl;
-        }
-        difficulty = 5;
-    }
     
     //cleanup old files
     if (world_rank == 0) {
-        system("rm -f logs/*.log checkpoints/*.chk checkpoints/*.state 2>/dev/null");
+        // system("rm -f logs/*.log checkpoints/*.chk checkpoints/*.state 2>/dev/null");
         cout << "=== Distributed Bitcoin Mining ===" << endl;
         cout << "Processes: " << world_size << endl;
         cout << "Difficulty: " << difficulty << " leading zeros" << endl;
