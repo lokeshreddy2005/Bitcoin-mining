@@ -13,9 +13,11 @@
 #include <thread>
 #include <map>
 #include <random>
+#include <chrono>
+#include <iomanip>
 
 using namespace std;
-
+using namespace std::chrono;
 int world_rank, world_size;
 RaftState raft_state;
 atomic<bool> block_found(false);
@@ -125,7 +127,10 @@ void broadcast_solution() {
         int found_by_rank;
         int term;
     } solution;
-    
+    if (world_size == 1) {
+        // Single process - no need to broadcast
+        return;
+    }
     if (world_rank == 0 && block_found) {
         solution.nonce = winning_nonce;
         strncpy(solution.hash, winning_hash.c_str(), 64);
@@ -684,9 +689,72 @@ void handle_messages() {
         log_to_file("Received termination signal");
     }
 }
+string sha256(const string& input) {
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256(reinterpret_cast<const unsigned char*>(input.c_str()), input.length(), hash);
+    
+    stringstream ss;
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+        ss << hex << setw(2) << setfill('0') << (int)hash[i];
+    }
+    return ss.str();
+}
 
 
 void run_node() {
+    if (world_size == 1) {
+        log_to_file("*** SINGLE PROCESS MODE - MINING DIRECTLY ***");
+        
+        // Mine each transaction
+        for (size_t tx_idx = 0; tx_idx < transactions.size() && !block_found; tx_idx++) {
+            log_to_file("Mining transaction " + to_string(tx_idx + 1));
+            
+            string tx_data = transactions[tx_idx].data;
+            
+            // Try nonces until solution found
+            for (uint64_t nonce = 0; !block_found; nonce++) {
+                string block_data = tx_data + to_string(nonce);
+                string hash = sha256(block_data);
+                total_hashes_computed++;
+                
+                // Check if hash meets difficulty
+                bool valid = true;
+                for (int i = 0; i < difficulty; i++) {
+                    if (hash[i] != '0') {
+                        valid = false;
+                        break;
+                    }
+                }
+                
+                if (valid) {
+                    // Found solution!
+                    block_found = true;
+                    winning_nonce = nonce;
+                    winning_hash = hash;
+                    winning_rank = 0;
+                    
+                    log_to_file("SOLUTION FOUND!");
+                    log_to_file("Nonce: " + to_string(nonce));
+                    log_to_file("Hash: " + hash);
+                    break;
+                }
+                
+                // Progress
+                if (nonce % 50000 == 0 && nonce > 0) {
+                    log_to_file("Checked " + to_string(nonce) + " nonces");
+                }
+            }
+            
+            if (block_found) break;
+        }
+        
+        if (!block_found) {
+            log_to_file("No solution found");
+        }
+        
+        return;
+    }
+    
     //rank 0 starts as leader initially
     if (world_rank == 0) {
         raft_state.state = LEADER;
@@ -694,7 +762,6 @@ void run_node() {
         raft_state.current_term = 1;
         raft_state.voted_for = 0;
         log_to_file("*** RANK 0 STARTING AS INITIAL LEADER ***");
-        
         if (global_work_ranges.empty()) {
             initialize_work_ranges();
         }
@@ -703,7 +770,6 @@ void run_node() {
         raft_state.leader_id = 0;
         raft_state.current_term = 1;
     }
-    
     raft_state.election_timeout_ms = get_random_election_timeout(world_rank);
     raft_state.last_heartbeat_time = current_time_ms();
     
@@ -769,6 +835,7 @@ int main(int argc, char** argv) {
     }
     
     MPI_Barrier(MPI_COMM_WORLD);
+    auto start_time = high_resolution_clock::now();
     
     log_to_file("Starting distributed mining (difficulty=" + to_string(difficulty) + ")");
     
@@ -790,20 +857,26 @@ int main(int argc, char** argv) {
         //wait to receive solution
         broadcast_solution();
     }
+    auto end_time = high_resolution_clock::now();
+    duration<double> elapsed = end_time - start_time;
+    auto total_mining_time_seconds = elapsed.count();
     
-    //ALL NODES display result
     MPI_Barrier(MPI_COMM_WORLD);
     
     if (block_found) {
         cout << "========================================" << endl;
         cout << "Rank " << world_rank << ": MINING COMPLETE!" << endl;
         cout << "========================================" << endl;
+        cout << "Total Time: " << fixed << setprecision(2) << total_mining_time_seconds << " seconds" << endl;
         cout << "Nonce: " << winning_nonce << endl;
         cout << "Hash: " << winning_hash << endl;
         cout << "Found by: Rank " << winning_rank << endl;
         cout << "My hashes: " << total_hashes_computed.load() << endl;
+        cout << "Hash rate: " << fixed << setprecision(2) 
+            << (total_hashes_computed.load() / total_mining_time_seconds) << " hashes/sec" << endl;
         cout << "========================================" << endl;
     }
+
     
     MPI_Finalize();
     return 0;
