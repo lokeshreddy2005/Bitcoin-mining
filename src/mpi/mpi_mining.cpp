@@ -1,6 +1,6 @@
-// mpi_mining.cpp - Complete fault-tolerant Bitcoin mining with Raft
+// mpi_mining.cpp - Distributed Bitcoin mining across VMs
 // Compile: mpic++ mpi_mining.cpp -o mpi_mining -std=c++17 -lssl -lcrypto -O2 -pthread
-// Run: mpirun -np 9 ./mpi_mining 4
+// Run: mpirun -np 9 -hostfile hosts.txt ./mpi_mining 4
 
 #include <mpi.h>
 #include <cstring>
@@ -12,6 +12,7 @@
 #include <mutex>
 #include <thread>
 #include <map>
+#include <random>
 
 using namespace std;
 
@@ -23,6 +24,7 @@ atomic<bool> should_terminate(false);
 atomic<uint64_t> total_hashes_computed(0);
 uint64_t winning_nonce = 0;
 string winning_hash;
+int winning_rank = -1;
 int difficulty = 4;
 vector<Transaction> transactions;
 vector<WorkRange> global_work_ranges;
@@ -31,12 +33,122 @@ WorkStatusReport my_work_status;
 int global_sequence_num = 0;
 mutex state_mutex;
 ofstream log_file;
-
-// CRITICAL: Track max nonce checked to prevent re-checking
 uint64_t global_max_nonce_checked = 0;
-
-// Set to UINT64_MAX for infinite mining (like real miners)
 uint64_t max_nonce_limit = UINT64_MAX;
+
+//random for transaction selection
+mt19937 rng(chrono::steady_clock::now().time_since_epoch().count());
+uniform_real_distribution<> uniform_dist(0.0, 1.0);
+
+// ========== DISTRIBUTED VM FUNCTIONS ==========
+
+//broadcast transactions from rank 0 to all nodes
+void broadcast_transactions() {
+    int num_txs;
+    
+    if (world_rank == 0) {
+        //rank 0 reads transactions and selects probabilistically
+        vector<Transaction> all_txs = read_transactions("../transactions.txt");
+        
+        if (all_txs.empty()) {
+            log_to_file("ERROR: No transactions found!");
+            num_txs = 0;
+            MPI_Bcast(&num_txs, 1, MPI_INT, 0, MPI_COMM_WORLD);
+            return;
+        }
+        
+        log_to_file("Read " + to_string(all_txs.size()) + " transactions from file");
+        
+        //probabilistically select transactions (binary k/total)
+        for (size_t i = 0; i < all_txs.size(); i++) {
+            double prob = (double)(i + 1) / (double)all_txs.size();
+            if (uniform_dist(rng) < prob || transactions.empty()) {
+                transactions.push_back(all_txs[i]);
+            }
+        }
+        
+        //ensure at least one transaction
+        if (transactions.empty()) {
+            transactions.push_back(all_txs[0]);
+        }
+        
+        num_txs = transactions.size();
+        log_to_file("Selected " + to_string(num_txs) + " transactions to broadcast");
+        
+        //broadcast count
+        MPI_Bcast(&num_txs, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        
+        //broadcast each transaction
+        for (int i = 0; i < num_txs; i++) {
+            char txid_buf[256], data_buf[256], hash_buf[256];
+            strncpy(txid_buf, transactions[i].txid.c_str(), 255);
+            strncpy(data_buf, transactions[i].data.c_str(), 255);
+            strncpy(hash_buf, transactions[i].prev_hash.c_str(), 255);
+            txid_buf[255] = data_buf[255] = hash_buf[255] = '\0';
+            
+            MPI_Bcast(txid_buf, 256, MPI_CHAR, 0, MPI_COMM_WORLD);
+            MPI_Bcast(data_buf, 256, MPI_CHAR, 0, MPI_COMM_WORLD);
+            MPI_Bcast(hash_buf, 256, MPI_CHAR, 0, MPI_COMM_WORLD);
+            
+            log_to_file("Broadcasting transaction " + to_string(i) + ": " + transactions[i].txid);
+        }
+    } else {
+        //other ranks receive transactions
+        MPI_Bcast(&num_txs, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        
+        if (num_txs == 0) {
+            log_to_file("ERROR: No transactions received from rank 0");
+            return;
+        }
+        
+        transactions.clear();
+        for (int i = 0; i < num_txs; i++) {
+            char txid_buf[256], data_buf[256], hash_buf[256];
+            MPI_Bcast(txid_buf, 256, MPI_CHAR, 0, MPI_COMM_WORLD);
+            MPI_Bcast(data_buf, 256, MPI_CHAR, 0, MPI_COMM_WORLD);
+            MPI_Bcast(hash_buf, 256, MPI_CHAR, 0, MPI_COMM_WORLD);
+            
+            Transaction tx;
+            tx.txid = string(txid_buf);
+            tx.data = string(data_buf);
+            tx.prev_hash = string(hash_buf);
+            transactions.push_back(tx);
+        }
+        
+        log_to_file("Received " + to_string(num_txs) + " transactions from rank 0");
+    }
+}
+
+//broadcast solution to all nodes when found
+void broadcast_solution() {
+    struct SolutionData {
+        uint64_t nonce;
+        char hash[65];
+        int found_by_rank;
+        int term;
+    } solution;
+    
+    if (world_rank == 0 && block_found) {
+        solution.nonce = winning_nonce;
+        strncpy(solution.hash, winning_hash.c_str(), 64);
+        solution.hash[64] = '\0';
+        solution.found_by_rank = winning_rank;
+        solution.term = raft_state.current_term;
+        
+        log_to_file("Broadcasting solution to all nodes");
+        MPI_Bcast(&solution, sizeof(SolutionData), MPI_BYTE, 0, MPI_COMM_WORLD);
+    } else {
+        MPI_Bcast(&solution, sizeof(SolutionData), MPI_BYTE, 0, MPI_COMM_WORLD);
+        
+        winning_nonce = solution.nonce;
+        winning_hash = string(solution.hash);
+        winning_rank = solution.found_by_rank;
+        block_found = true;
+        
+        log_to_file("Received solution: nonce=" + to_string(winning_nonce) + 
+                   ", hash=" + winning_hash + ", found by rank " + to_string(winning_rank));
+    }
+}
 
 // ========== RAFT FUNCTIONS ==========
 
@@ -183,26 +295,21 @@ void check_election_timeout() {
     }
 }
 
-// ========== WORK DEDUPLICATION LOGIC ==========
+// ========== WORK DEDUPLICATION ==========
 
-// CRITICAL: Update max nonce to prevent re-checking
 void update_max_nonce_checked() {
     for (const auto& range : global_work_ranges) {
         if (range.completed && range.end_nonce > global_max_nonce_checked) {
             global_max_nonce_checked = range.end_nonce;
         }
     }
-    log_to_file("Max nonce checked so far: " + to_string(global_max_nonce_checked));
 }
 
-// FIXED: Expand work ONLY from max checked nonce (never re-check)
 void expand_work_ranges() {
-    // First, update what's been completed
     update_max_nonce_checked();
     
     uint64_t max_end = global_max_nonce_checked;
     
-    // If nothing completed yet, find current max from existing ranges
     if (max_end == 0) {
         for (const auto& range : global_work_ranges) {
             if (range.end_nonce > max_end) {
@@ -211,10 +318,8 @@ void expand_work_ranges() {
         }
     }
     
-    log_to_file("Expanding work from nonce " + to_string(max_end) + 
-               " (already checked: 0-" + to_string(global_max_nonce_checked) + ")");
+    log_to_file("Expanding work from nonce " + to_string(max_end));
     
-    // Add new ranges AFTER max_end (never re-check old work)
     int new_ranges = (world_size - 1) * 2;
     for (int i = 0; i < new_ranges; ++i) {
         if (max_end >= max_nonce_limit) break;
@@ -232,23 +337,23 @@ void expand_work_ranges() {
         max_end += NONCE_RANGE_SIZE;
     }
     
-    log_to_file("Expanded work: total nonces now " + to_string(max_end));
+    log_to_file("Total nonces now: " + to_string(max_end));
 }
 
-// FIXED: Distribute work only from unchecked ranges
 void leader_distribute_work() {
     if (raft_state.state != LEADER || transactions.empty()) return;
     
     this_thread::sleep_for(chrono::milliseconds(200));
     
-    // CRITICAL: Update max checked before distributing
     update_max_nonce_checked();
     
-    int tx_index = 0;
+    //randomly select transaction
+    int tx_index = rng() % transactions.size();
     Transaction& tx = transactions[tx_index];
     
     log_to_file("Leader distributing work for " + tx.txid + 
-               " (completed: 0-" + to_string(global_max_nonce_checked) + ")");
+               " (tx " + to_string(tx_index+1) + "/" + to_string(transactions.size()) + 
+               ", completed: 0-" + to_string(global_max_nonce_checked) + ")");
     
     int assigned = 0;
     for (int worker = 0; worker < world_size; ++worker) {
@@ -265,9 +370,8 @@ void leader_distribute_work() {
             }
         }
         
-        // Double-check: Don't assign already-checked nonces
         if (range->start_nonce < global_max_nonce_checked) {
-            log_to_file("WARNING: Skipping range [" + to_string(range->start_nonce) + 
+            log_to_file("Skipping range [" + to_string(range->start_nonce) + 
                        ", " + to_string(range->end_nonce) + ") - already checked");
             range->completed = true;
             continue;
@@ -289,7 +393,7 @@ void leader_distribute_work() {
         MPI_Send(&work, sizeof(WorkAssignment), MPI_BYTE, worker, 
                  TAG_WORK_ASSIGN, MPI_COMM_WORLD);
         
-        log_to_file("Assigned NEW range [" + to_string(work.start_nonce) + 
+        log_to_file("Assigned range [" + to_string(work.start_nonce) + 
                    ", " + to_string(work.end_nonce) + ") to rank " + to_string(worker));
         assigned++;
     }
@@ -336,6 +440,7 @@ void leader_monitor_workers() {
             block_found = true;
             winning_nonce = result.nonce;
             winning_hash = string(result.hash_hex);
+            winning_rank = result.worker_id;
             
             log_to_file("*** NONCE FOUND by rank " + to_string(status.MPI_SOURCE) + 
                        " *** Nonce: " + to_string(winning_nonce) + ", Hash: " + winning_hash);
@@ -349,6 +454,7 @@ void leader_monitor_workers() {
             result_file << "Total hashes: " << total_hashes_computed.load() << "\n";
             result_file.close();
             
+            //send terminate to all workers
             for (int i = 0; i < world_size; ++i) {
                 if (i != world_rank) {
                     int term = 1;
@@ -358,7 +464,6 @@ void leader_monitor_workers() {
             should_terminate = true;
             return;
         } else {
-            // Worker completed range
             for (auto& range : global_work_ranges) {
                 if (range.worker_id == result.worker_id && range.in_progress) {
                     range.completed = true;
@@ -366,7 +471,6 @@ void leader_monitor_workers() {
                     log_to_file("Rank " + to_string(result.worker_id) + " completed range [" +
                                to_string(range.start_nonce) + ", " + to_string(range.end_nonce) + ")");
                     
-                    // Update global max checked
                     if (range.end_nonce > global_max_nonce_checked) {
                         global_max_nonce_checked = range.end_nonce;
                     }
@@ -374,7 +478,6 @@ void leader_monitor_workers() {
                 }
             }
             
-            // Assign next NEW work
             WorkRange* next_range = get_next_incomplete_range();
             if (!next_range) {
                 expand_work_ranges();
@@ -382,7 +485,6 @@ void leader_monitor_workers() {
             }
             
             if (next_range && !transactions.empty()) {
-                // Skip if already checked
                 if (next_range->start_nonce < global_max_nonce_checked) {
                     next_range->completed = true;
                     continue;
@@ -404,7 +506,7 @@ void leader_monitor_workers() {
                 MPI_Send(&work, sizeof(WorkAssignment), MPI_BYTE, result.worker_id, 
                          TAG_WORK_ASSIGN, MPI_COMM_WORLD);
                 
-                log_to_file("Assigned NEW range [" + to_string(work.start_nonce) + 
+                log_to_file("Assigned new range [" + to_string(work.start_nonce) + 
                            ", " + to_string(work.end_nonce) + ") to rank " + to_string(result.worker_id));
             }
         }
@@ -439,7 +541,6 @@ void worker_mine(const WorkAssignment& work) {
     uint64_t hashes_this_range = 0;
     uint64_t total_checks = work.end_nonce - work.start_nonce;
     
-    // ACTUAL MINING LOOP
     for (uint64_t nonce = work.start_nonce; nonce < work.end_nonce; ++nonce) {
         if (should_terminate || block_found) {
             my_work_status.is_mining = false;
@@ -449,15 +550,12 @@ void worker_mine(const WorkAssignment& work) {
         
         my_work_status.progress_nonce = nonce;
         
-        // Compute SHA-256 hash
         string hash = sha256_hash(tx_data, nonce);
         hashes_this_range++;
         total_hashes_computed++;
         
-        // Check if valid
         bool is_valid = valid_hash(hash, difficulty);
         
-        // Debug: Log samples
         if (hashes_this_range <= 5 || hashes_this_range % 50000 == 0) {
             log_to_file("Nonce " + to_string(nonce) + ": " + hash + 
                        (is_valid ? " ✓ VALID!" : "  ✗ invalid"));
@@ -490,7 +588,6 @@ void worker_mine(const WorkAssignment& work) {
             return;
         }
         
-        // Periodic tasks
         if (nonce % MESSAGE_CHECK_FREQUENCY == 0 && nonce > work.start_nonce) {
             auto now = steady_clock::now();
             
@@ -531,7 +628,6 @@ void worker_mine(const WorkAssignment& work) {
         }
     }
     
-    // Completed range
     auto mining_duration = chrono::duration_cast<chrono::milliseconds>(
         steady_clock::now() - mining_start).count();
     
@@ -589,20 +685,32 @@ void handle_messages() {
         int term;
         MPI_Recv(&term, 1, MPI_INT, MPI_ANY_SOURCE, TAG_TERMINATE, MPI_COMM_WORLD, &status);
         should_terminate = true;
-        log_to_file("Terminating");
+        log_to_file("Received termination signal");
     }
 }
 
 // ========== MAIN LOOP ==========
 
 void run_node() {
+    //rank 0 starts as leader initially
+    if (world_rank == 0) {
+        raft_state.state = LEADER;
+        raft_state.leader_id = 0;
+        raft_state.current_term = 1;
+        raft_state.voted_for = 0;
+        log_to_file("*** RANK 0 STARTING AS INITIAL LEADER ***");
+        
+        if (global_work_ranges.empty()) {
+            initialize_work_ranges();
+        }
+    } else {
+        raft_state.state = FOLLOWER;
+        raft_state.leader_id = 0;
+        raft_state.current_term = 1;
+    }
+    
     raft_state.election_timeout_ms = get_random_election_timeout(world_rank);
     raft_state.last_heartbeat_time = current_time_ms();
-    
-    transactions = read_transactions("transactions.txt");
-    if (world_rank == 0) {
-        log_to_file("Loaded " + to_string(transactions.size()) + " transactions");
-    }
     
     if (transactions.empty()) {
         log_to_file("ERROR: No transactions loaded!");
@@ -654,54 +762,59 @@ int main(int argc, char** argv) {
         difficulty = atoi(argv[1]);
     }
     
-    // Clean old files
+    //cap difficulty
+    if (difficulty > 6) {
+        if (world_rank == 0) {
+            cout << "Warning: Difficulty " << difficulty << " too high, using 5 instead" << endl;
+        }
+        difficulty = 5;
+    }
+    
+    //cleanup old files
     if (world_rank == 0) {
         system("rm -f logs/*.log checkpoints/*.chk checkpoints/*.state 2>/dev/null");
-        cout << "=== Bitcoin Mining Started ===" << endl;
+        cout << "=== Distributed Bitcoin Mining ===" << endl;
         cout << "Processes: " << world_size << endl;
         cout << "Difficulty: " << difficulty << " leading zeros" << endl;
-        cout << "Mining until solution found (no limit)" << endl;
-        cout << "Logs: logs/rank_*.log" << endl;
-        cout << "==============================" << endl;
+        cout << "Initial Leader: Rank 0" << endl;
+        cout << "===================================" << endl;
     }
     
     MPI_Barrier(MPI_COMM_WORLD);
     
-    log_to_file("Starting mining (difficulty=" + to_string(difficulty) + ")");
+    log_to_file("Starting distributed mining (difficulty=" + to_string(difficulty) + ")");
     
+    //rank 0 reads and broadcasts transactions
+    broadcast_transactions();
+    
+    //run mining
     run_node();
     
     if (log_file.is_open()) log_file.close();
     
+    //wait for all nodes
     MPI_Barrier(MPI_COMM_WORLD);
     
-    // Check results
-    if (world_rank == 0) {
-        this_thread::sleep_for(chrono::milliseconds(100));
-        
-        ifstream result_file(LOG_DIR + "final_result.txt");
-        if (result_file.is_open()) {
-            string nonce_line, hash_line, found_line, term_line, diff_line;
-            getline(result_file, nonce_line);
-            getline(result_file, hash_line);
-            getline(result_file, found_line);
-            getline(result_file, term_line);
-            getline(result_file, diff_line);
-            result_file.close();
-            
-            if (nonce_line.find("Nonce:") != string::npos) {
-                cout << "\n========================================" << endl;
-                cout << "*** SUCCESS! Block Mined! ***" << endl;
-                cout << "========================================" << endl;
-                cout << nonce_line << endl;
-                cout << hash_line << endl;
-                cout << found_line << endl;
-                cout << term_line << endl;
-                cout << diff_line << endl;
-                cout << "========================================" << endl;
-            }
-        }
-        cout << "\nSee logs/ for detailed logs" << endl;
+    //if solution found, broadcast to all nodes
+    if (block_found && world_rank == 0) {
+        broadcast_solution();
+    } else if (!block_found) {
+        //wait to receive solution
+        broadcast_solution();
+    }
+    
+    //ALL NODES display result
+    MPI_Barrier(MPI_COMM_WORLD);
+    
+    if (block_found) {
+        cout << "========================================" << endl;
+        cout << "Rank " << world_rank << ": MINING COMPLETE!" << endl;
+        cout << "========================================" << endl;
+        cout << "Nonce: " << winning_nonce << endl;
+        cout << "Hash: " << winning_hash << endl;
+        cout << "Found by: Rank " << winning_rank << endl;
+        cout << "My hashes: " << total_hashes_computed.load() << endl;
+        cout << "========================================" << endl;
     }
     
     MPI_Finalize();
