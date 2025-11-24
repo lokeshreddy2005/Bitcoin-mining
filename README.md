@@ -58,8 +58,8 @@ Example:
 
     ./static_partition 4 5 50000000
 
-Output Printed: - Time (ms) - Winning nonce - Hash - Logs stored in
-src/cpu/logs_static/
+-   Output Printed: - Time (ms) - Winning nonce - Hash 
+-   Logs stored in src/cpu/logs_static/
 
 ### Dynamic Work-Stealing Miner
 
@@ -69,8 +69,8 @@ Example:
 
     ./dynamic_stealing 8 5 5000000 20000
 
-Output Printed: - Time (ms) - Winning nonce - Hash - Logs stored in
-src/cpu/logs_dynamic/ - dynamic_summary.csv generated
+-   Output Printed: - Time (ms) - Winning nonce - Hash 
+-   Logs stored in src/cpu/logs_dynamic/ - dynamic_summary.csv generated
 
 ### MPI Distributed Miner
 
@@ -80,10 +80,9 @@ Example:
 
     mpirun -np 5 -hostfile hosts.txt ./mpi_mining 5
 
-Output Printed: - Time (seconds) - Winning nonce - Hash - Rank that
+-   Output Printed: - Time (seconds) - Winning nonce - Hash - Rank that
 found solution - Hashes by each worker
-
-Output Files: - logs/rank\_`<id>`.log - logs/final_result.txt -
+-   Output Files: - logs/rank\_`<id>`.log - logs/final_result.txt -
 checkpoints/global_work_state_term\_\*.state
 
 ## Output Files Summary
