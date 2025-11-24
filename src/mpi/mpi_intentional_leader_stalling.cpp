@@ -1,7 +1,8 @@
 // mpi_mining.cpp - Distributed Bitcoin mining across VMs
 // Compile: mpic++ mpi_mining.cpp -o mpi_mining -std=c++17 -lssl -lcrypto -O2 -pthread
 // Run: mpirun -np 9 -hostfile hosts.txt ./mpi_mining 4
-
+#include <cstdlib>
+#include <ctime>
 #include <mpi.h>
 #include <cstring>
 #include "mining_utils.hpp"
@@ -781,9 +782,11 @@ void run_node() {
     
     my_work_status.worker_id = world_rank;
     my_work_status.is_mining = false;
+    bool leader_stalled = false;
     
     auto last_heartbeat_check = steady_clock::now();
     bool work_distributed = false;
+    int loop_iterations = 0;
     
     while (!should_terminate && !block_found) {
         handle_messages();
@@ -791,6 +794,15 @@ void run_node() {
         auto now = steady_clock::now();
         
         if (raft_state.state == LEADER) {
+            
+            if (!leader_stalled && loop_iterations++ == 15) {
+                log_to_file("Intentional leader stall for 10 seconds (simulating failure for Raft demo)...");
+                leader_stalled = true;
+                std::this_thread::sleep_for(std::chrono::seconds(10));
+                log_to_file("Leader resumes after intentional stall demo.");
+            }       
+
+            
             if (chrono::duration_cast<chrono::milliseconds>(
                 now - last_heartbeat_check).count() > HEARTBEAT_INTERVAL_MS) {
                 
@@ -819,6 +831,7 @@ int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+    srand(time(NULL));
     
     if (argc >= 2) {
         difficulty = atoi(argv[1]);
