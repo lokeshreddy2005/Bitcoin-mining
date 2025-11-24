@@ -1,0 +1,6 @@
+Nonce: 500305
+Hash: 000569062e4f4c9688a56d3f620eae2fc9e761d9c8f6584ec289455847255246
+Found by: Rank 2
+Term: 1
+Difficulty: 3
+Total hashes: 0

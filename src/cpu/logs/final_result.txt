@@ -1,0 +1,6 @@
+Nonce: 46893028
+Hash: 00000a158fce7fe73048e448083af75310f6a500e803ec711e07f6fbb5f1b1ce
+Found by: Thread 15
+Difficulty: 5
+Total hashes: 181416
+Threads: 16
