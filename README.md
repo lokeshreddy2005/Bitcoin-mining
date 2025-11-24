@@ -1,30 +1,5 @@
 # Distributed Mining Project
 
-## Folder Structure
-
-    Distributed/KL
-    ├── Makefile
-    ├── readme.txt
-    └── src
-        ├── cpu
-        │   ├── static_partition.cpp
-        │   ├── dynamic_stealing.cpp
-        │   ├── static_partition        (binary after compile)
-        │   ├── dynamic_stealing        (binary after compile)
-        │   └── logs/                   (output logs)
-        │
-        ├── mpi
-        │   ├── mpi_mining.cpp
-        │   ├── mpi_mining              (binary after compile)
-        │   ├── mining_utils.hpp
-        │   ├── file_io.hpp
-        │   ├── raft_state.hpp
-        │   ├── work_manager.hpp
-        │   ├── hosts.txt
-        │   └── checkpoints/            (auto-generated)
-        │
-        └── transactions.txt
-
 ## Compilation Commands
 
 ### Static Partition Miner
