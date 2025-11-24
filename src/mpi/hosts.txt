@@ -1,1 +1,2 @@
-localhost
+localhost slots = 1
+10.96.0.69 slots = 1
