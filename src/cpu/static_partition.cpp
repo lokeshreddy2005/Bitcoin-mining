@@ -25,7 +25,7 @@
 using namespace std;
 using steady_clock = chrono::steady_clock;
 
-static const string LOG_DIR = "logs/";
+static const string LOG_DIR = "logs_static/";
 
 // ---------------- helpers ----------------
 
