@@ -217,7 +217,7 @@ void miner_thread(int id, WorkerState &self, vector<WorkerState> &workers, const
                 }
                 break;
             }
-            if ((n - work.start) % 100000 == 0) append_log(logf, now_iso() + ",PROGRESS," + to_string(n));
+            // if ((n - work.start) % 100000 == 0) append_log(logf, now_iso() + ",PROGRESS," + to_string(n));
         }
     }
 
