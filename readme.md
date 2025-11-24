@@ -1,4 +1,3 @@
-=============================
  Distributed Mining Project
 =============================
 
@@ -29,7 +28,6 @@ Distributed/KL
     └── transactions.txt
 
 
-========================================
  Compilation Commands
 ========================================
 
@@ -49,7 +47,6 @@ cd src/mpi
 mpic++ mpi_mining.cpp -o mpi_mining -std=c++17 -lssl -lcrypto -O2 -pthread
 
 
-========================================
  Running Commands
 ========================================
 
@@ -102,7 +99,6 @@ Output Files:
 - checkpoints/global_work_state_term_*.state
 
 
-========================================
  Output Files Summary
 ========================================
 
@@ -126,6 +122,5 @@ src/mpi/logs/final_result.txt
 src/mpi/checkpoints/global_work_state_term_*.state
 
 
-========================================
  End of README
 ========================================
